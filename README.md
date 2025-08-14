@@ -121,7 +121,7 @@ python 2BMux.py -plate <P_POS> -row <R_POS> -read <D_POS> -idmap <ID_MAP_FILE> [
 *   `--antiBC_only`: If set, only uses `antiBC` barcodes for demultiplexing, ignoring `3illBC` barcodes. This is specific for protocols using chimeric TCAC/GTGA barcodes which will require the use of a single barcode orientation for proper demultiplexing.
 *   `--allR1`: If set, keeps demultiplexed R1 reads even if they do not have a corresponding R2 read.
 *   `-min_bc_count <INT>`: Minimum number of reads required for a barcode to be written to an output file. Default: `10000`.
-*   `-site <REGEX>`: The regex pattern for the restriction site. Defaults to the BcgI 2b-RAD pattern. i.e.: '^(?:(?P<forward>.{12}CGA.{6}TGC.{12})|(?P<reverse>.{12}GCA.{6}TCG.{12}))'
+*   `-site <REGEX>`: The regex pattern for the restriction site. Defaults to the BcgI 2b-RAD pattern. i.e.: `'^(?:(?P<forward>.{12}CGA.{6}TGC.{12})|(?P<reverse>.{12}GCA.{6}TCG.{12}))'`
 *   `-trim <INT>`: Number of bases to trim from both ends of the DNA fragment after demultiplexing. Default: `0`.
 
 ---
