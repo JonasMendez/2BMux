@@ -2,7 +2,7 @@
 
 This repository contains a suite of scripts designed to process raw, multiplexed 2b-RAD sequencing data. The workflow allows you to demultiplex FASTQ files based on inline barcodes, generate the necessary sample mapping files, and prepare your data for downstream analysis tools like `ipyrad`.
 
-## Repository Overview
+## Overview
 
 This toolkit includes three main components:
 
@@ -10,7 +10,7 @@ This toolkit includes three main components:
 2.  **`PlateRelate.py`**: A helper script to create a properly formatted sample-to-barcode map (`-idmap` file). It takes a simple plate layout matrix and a list of sample names and generates the detailed CSV file required by the main demultiplexing script.
 3.  **`concatenatepairs.sh`**: A utility shell script to concatenate paired-end (R1/R2) FASTQ files into a single file per sample. This is often required for downstream tools like `ipyrad` that use a single-end assembly workflow for 2b-RAD data.
 
-## The Workflow at a Glance
+## General Workflow
 
 The recommended workflow is as follows:
 
@@ -22,13 +22,13 @@ The recommended workflow is as follows:
 
 3.  **Demultiplex Raw Data**: Run the main `2BMux.py` script on your raw, multiplexed `R1` and `R2` FASTQ files, using the `PlateX_IDs.csv` file as the `-idmap` input. This will produce clean, demultiplexed FASTQ files for each sample.
 
-4.  **(Optional) Merge Paired-End Files**: If your downstream analysis requires it, use the `merge_fastq_pairs.sh` script to combine the demultiplexed `_R1_.fastq` and `_R2_.fastq` files into a single merged FASTQ file for each sample.
+4.  **(Optional) Merge Paired-End Files**: If your downstream analysis requires it, use the `concatenatepairs.sh` script to combine the demultiplexed `_R1_.fastq` and `_R2_.fastq` files into a single merged FASTQ file for each sample.
 
 ---
 
 ## 1. `PlateRelate.py` - Sample Sheet Generator
 
-This script automates the creation of the sample-to-barcode mapping file required by the main demultiplexer. It translates a simple, human-readable plate layout into the precise format needed for the next step.
+This script automates the creation of the sample-to-barcode mapping file required by the main demultiplexer. It translates a simple plate layout into the precise format needed for the 2BMux.py script -idmap input.
 
 ### Features
 
