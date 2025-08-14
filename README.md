@@ -115,8 +115,8 @@ python 2BMux.py -plate <P_POS> -row <R_POS> -read <D_POS> -idmap <ID_MAP_FILE> [
 *   `-read <D_POS>`: The 1-based position of the read designator (`R1`/`R2`) in the filename. (e.g., if `Plate1_Row1_fastqinfo_R1.fastq.gz`, use `-read 4`)
 *   `-idmap <ID_MAP_FILE>`: Path to the sample sheet created by `PlateRelate.py` (e.g., `Plate1_IDs.csv`).
 
-**Key Optional Arguments:**
-
+**Optional Arguments:**
+* In practice I have always used --antiBC only and --allR1 for my specific workflows, but I leave the options here in case you find utility in excluding them.
 *   `--strict_orientation`: If set, discards reads where the site orientation and barcode type are unexpected (e.g., a forward-oriented site with an `antiBC`). Default is to allow and flag them.
 *   `--antiBC_only`: If set, only uses `antiBC` barcodes for demultiplexing, ignoring `3illBC` barcodes. This is specific for protocols using chimeric TCAC/GTGA barcodes which will require the use of a single barcode orientation for proper demultiplexing.
 *   `--allR1`: If set, keeps demultiplexed R1 reads even if they do not have a corresponding R2 read.
