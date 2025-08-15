@@ -15,8 +15,8 @@ This toolkit includes three main components:
 The recommended workflow is as follows:
 
 1.  **Prepare Sample Information**: Create your input files:
-    *   A CSV file listing your `SampleID` and a unique `Index` for each (`samples.csv`).
-    *   A CSV file representing your physical plate layout, using the indices from the file above (`plate1matrix.csv`).
+    *   A CSV file listing your `SampleID` and a unique `Index` for each (e.g.`Plate1_Samples_input.csv`).
+    *   A CSV file representing your physical plate layout, using the indices from the file above (e.g.`Plate1Matrix_input.csv`).
 
 2.  **Generate the ID Map**: Use `PlateRelate.py` to convert your plate layout and sample list into the final `PlateX_IDs.csv` file. This file maps each sample to its specific plate, row, and barcode.
 
@@ -34,10 +34,10 @@ This script automates the creation of the sample-to-barcode mapping file require
 
 *   Parses a simple CSV matrix representing your 8-row plate.
 *   Handles plates with a variable number of columns (up to 12).
-*   Ignores empty cells or cells with non-sample text (e.g., "Blank").
+*   Ignores empty cells or cells with non-numeric text (e.g., "Blank").
 *   Maps the column position to a pre-defined 4-bp barcode.
 *   Accepts command-line arguments for plate number and input files.
-*   For multiple plates, run the script independently for each plate, using the proper plate number, and then concatenate output files for each.
+*   For multiple plates, run the script independently for each plate, using the proper plate number, and then concatenate output files for each and remove extra headers.
 ### Usage
 
 ```sh
@@ -52,7 +52,7 @@ python PlateRelate.py -plate <PLATE_NUM> -matrix <MATRIX_FILE> -ids <IDS_FILE>
 
 ### Example
 
-**Input File 1: `samples.csv` (`-ids`)**
+**Input File 1: `Plate1_Samples_input.csv` (`-ids`)**
 ```csv
 SampleID,Index
 Sample_A,1
@@ -61,7 +61,7 @@ Sample_C,3
 etc...
 ```
 
-**Input File 2: `plate1matrix.csv` (`-matrix`)**
+**Input File 2: `Plate1Matrix_input.csv` (`-matrix`)**
 ```csv
 1,2,3
 13,14,Blank,16
@@ -116,7 +116,7 @@ python 2BMux.py -plate <P_POS> -row <R_POS> -read <D_POS> -idmap <ID_MAP_FILE> [
 *   `-idmap <ID_MAP_FILE>`: Path to the sample sheet created by `PlateRelate.py` (e.g., `Plate1_IDs.csv`).
 
 **Optional Arguments:**
-* In practice I have always used --antiBC only and --allR1 for my specific workflows, but I leave the options here in case you find utility in excluding them.
+* In practice I have always used --antiBC_only and --allR1 for my specific workflows, but I leave the options here in case you find utility in excluding them.
 *   `--strict_orientation`: If set, discards reads where the site orientation and barcode type are unexpected (e.g., a forward-oriented site with an `antiBC`). Default is to allow and flag them.
 *   `--antiBC_only`: If set, only uses `antiBC` barcodes for demultiplexing, ignoring `3illBC` barcodes. This is specific for protocols using chimeric TCAC/GTGA barcodes which will require the use of a single barcode orientation for proper demultiplexing.
 *   `--allR1`: If set, keeps demultiplexed R1 reads even if they do not have a corresponding R2 read.
