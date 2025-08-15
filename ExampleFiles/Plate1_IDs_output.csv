@@ -1,4 +1,4 @@
-Plate,Row,Barcode,SampleID
+Plate,Row,3illBC,SampleID
 1,1,ACAC,1_0_T1C1
 1,1,GTCT,9_22_T1C2
 1,1,TGGT,17_48_T1C3
@@ -94,3 +94,4 @@ Plate,Row,Barcode,SampleID
 1,8,GTAG,41_90_T2C5
 1,8,GACA,3_4_T3C1
 1,8,GTGA,11_20_T3C2
+
