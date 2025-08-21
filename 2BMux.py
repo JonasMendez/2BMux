@@ -8,492 +8,251 @@ import sys
 import csv
 from collections import defaultdict
 import logging
+import math
+import gzip
 
-# Hardcoded 3illBC and antiBC barcodes, these may be re hard-coded to your own specific barcodes
+# --- Barcode and Adaptor definitions ---
 BARCODE_PAIRS = {
-    "ACAC": "GTGT",
-    "GTCT": "AGAC",
-    "TGGT": "ACCA",
-    "CACT": "AGTG",
-    "GATG": "CATC",
-    "TCAC": "GTGA",
-    "CTGA": "TCAG",
-    "AAGC": "GCTT",
-    "GTAG": "CTAC",
-    "GACA": "TGTC",
-    "GTGA": "TCAC",
-    "AGTC": "GACT"
+    "ACAC": "GTGT", "GTCT": "AGAC", "TGGT": "ACCA", "CACT": "AGTG",
+    "GATG": "CATC", "TCAC": "GTGA", "CTGA": "TCAG", "AAGC": "GCTT",
+    "GTAG": "CTAC", "GACA": "TGTC", "GTGA": "TCAC", "AGTC": "GACT"
 }
 ILL_BARCODES = set(BARCODE_PAIRS.keys())
 ANTI_BARCODES = set(BARCODE_PAIRS.values())
 ANTI_TO_ILL = {v: k for k, v in BARCODE_PAIRS.items()}
-
-# Common Illumina adaptor sequences (partial); you may modify and add hardcoded adaptor sequences if needed.
-ADAPTORS = [
-    'AATGATACGGCG',  # Partial P5 adaptor
-    'AGATCGGAAG',    # Partial P7 adaptor
-    'CAAGCAGAAGAC'   # Partial P7 adaptor
-]
-
+R2_ADAPTOR_SEED = "AGAT"
 
 def parse_filename(filename, plate_pos, row_pos, read_pos):
-    #Parse plate number, row number, and read designation from filename
-    # Extract filename without path and extension
     base_filename = os.path.basename(filename)
-    base_filename_no_ext = base_filename.split('.')[0] # Remove .fastq.gz or .fq.gz
-
+    base_filename_no_ext = base_filename.split('.')[0]
     parts = base_filename_no_ext.split('_')
-    if plate_pos - 1 >= len(parts) or row_pos - 1 >= len(parts) or read_pos - 1 >= len(parts):
-        raise ValueError(f"Filename {filename} does not have enough underscore-separated parts")
-
-    # Plate number: Extract first integer > 0
-    plate_str = parts[plate_pos - 1]
-    plate_nums = re.findall(r'\d+', plate_str)
-    plate_nums = [int(n) for n in plate_nums if int(n) > 0]
-    if len(plate_nums) != 1:
-        raise ValueError(f"Plate ID {plate_str} must contain exactly one integer > 0")
-
-    # Row number: Extract first integer > 0
-    row_str = parts[row_pos - 1]
-    row_nums = re.findall(r'\d+', row_str)
-    row_nums = [int(n) for n in row_nums if int(n) > 0]
-    if len(row_nums) != 1:
-        raise ValueError(f"Row ID {row_str} must contain exactly one integer > 0")
-
-    # Read designation: Look for 1 or 2
-    read_str = parts[read_pos - 1]
-    read_match = re.search(r'[12]', read_str)
-    if not read_match:
-        raise ValueError(f"Read designation {read_str} must contain '1' or '2'")
-    read = 'R1' if read_match.group(0) == '1' else 'R2'
-
-    return plate_nums[0], row_nums[0], read
-
+    if not all(pos - 1 < len(parts) for pos in [plate_pos, row_pos, read_pos]):
+        raise ValueError(f"Filename {filename} does not have enough parts")
+    plate_str, row_str, read_str = parts[plate_pos-1], parts[row_pos-1], parts[read_pos-1]
+    plate_num = int(re.search(r'\d+', plate_str).group())
+    row_num = int(re.search(r'\d+', row_str).group())
+    read = 'R1' if '1' in read_str else 'R2'
+    return plate_num, row_num, read
 
 def load_id_map(idmap_file):
-    #Load ID mapping from CSV
-    id_map = {}
-    bc_to_sample = {}
+    id_map, bc_to_sample = {}, {}
     with open(idmap_file, 'r') as f:
         reader = csv.reader(f)
         header = next(reader)
-        if header != ['Plate', 'Row', '3illBC', 'SampleID']:
-            raise ValueError("ID map CSV must have columns: Plate,Row,3illBC,SampleID")
+        expected_header = ['Plate', 'Row', '3illBC', 'SampleID']
+        if header != expected_header:
+            raise ValueError(f"ID map CSV header is incorrect. Expected: {expected_header}, Found: {header}")
         for row in reader:
-            if len(row) != 4:
-                raise ValueError(f"Invalid ID map row: {row}")
             plate, row_num, barcode, sample_id = row
-            plate = int(plate)
-            row_num = int(row_num)
-            if barcode not in BARCODE_PAIRS:
-                raise ValueError(f"3illBC {barcode} in ID map not in real barcodes")
-            id_map[(plate, row_num, barcode)] = sample_id
+            id_map[(int(plate), int(row_num), barcode)] = sample_id
             bc_to_sample[barcode] = sample_id
     return id_map, bc_to_sample
 
+def calculate_stats_from_list(data_list):
+    n = len(data_list)
+    if n == 0: return 0.0, 0.0
+    mean = sum(data_list) / n
+    stdev = math.sqrt(sum((x - mean) ** 2 for x in data_list) / n) if n > 0 else 0
+    return mean, stdev
 
 def main():
-    parser = argparse.ArgumentParser(description="Demultiplex and quality filter 2b-RAD paired-end FASTQ files.")
-    parser.add_argument(
-        '-site',
-        default='^(?:(?P<forward>.{12}CGA.{6}TGC.{12})|(?P<reverse>.{12}GCA.{6}TCG.{12}))',
-        help='Regex pattern for restriction site (default: BcgI 2b-RAD)'
-    )
-    parser.add_argument('-barcode', default='[ATGC]{4}',
-                        help='Regex pattern for in-line barcode (default: 4-bp ATGC)')
-    parser.add_argument('-adaptor', default='|'.join(ADAPTORS),
-                        help='Adaptor sequences used to trim R2 (default: Illumina P5/P7 partial sequences)')
-    parser.add_argument('-trim', type=int, default=0,
-                        help='Number of bases to trim from ends of fragment (default: 0)')
-    parser.add_argument('-min_bc_count', type=int, default=10000,
-                        help='Minimum read count per barcode for output (default: 10000)')
-    parser.add_argument('-plate', type=int, required=True,
-                        help='Position of plate number in filename (1-based)')
-    parser.add_argument('-row', type=int, required=True,
-                        help='Position of row number in filename (1-based)')
-    parser.add_argument('-read', type=int, required=True,
-                        help='Position of read designation (1 or 2) in filename (1-based)')
-    parser.add_argument('-idmap', required=True,
-                        help='CSV file with Plate,Row,3illBC,SampleID columns')
-    parser.add_argument('--strict_orientation', action='store_true',
-                        help='If set, discard reads where site orientation and barcode role disagree (default: allow but flag)')
-    parser.add_argument('--antiBC_only', action='store_true',
-                        help='If set, only consider antiBC barcodes for demultiplexing, regardless of site orientation.')
-    parser.add_argument('--allR1', action='store_true',
-                        help='If set, keep demultiplexed R1 reads even if they do not have an R2 pair.')
-
+    parser = argparse.ArgumentParser(description="Demultiplex, clean, and quality filter 2b-RAD paired-end FASTQ files.")
+    parser.add_argument('-site', default='^(?:(?P<forward>.{36})|(?P<reverse>.{36}))', help='Regex for the DNA fragment (default: 36bp)')
+    parser.add_argument('-barcode', default='[ATGC]{4}', help='Regex for in-line barcode (default: 4-bp ATGC)')
+    parser.add_argument('-adaptor', default='AGATCGGAAG', help='Adaptor sequence on R1 (default: Partial P7)')
+    parser.add_argument('-trim', type=int, default=0, help='Bases to trim from ends of fragment (default: 0)')
+    parser.add_argument('-min_bc_count', type=int, default=10000, help='Minimum read count per barcode (default: 10000)')
+    parser.add_argument('-plate', type=int, required=True, help='Position of plate number in filename')
+    parser.add_argument('-row', type=int, required=True, help='Position of row number in filename')
+    parser.add_argument('-read', type=int, required=True, help='Position of read designation in filename')
+    parser.add_argument('-idmap', required=True, help='CSV file with Plate,Row,3illBC,SampleID columns')
+    parser.add_argument('--strict_orientation', action='store_true', help='Discard reads with unexpected site/barcode orientation')
+    parser.add_argument('--antiBC_only', action='store_true', help='Only use antiBC barcodes for demultiplexing')
     args = parser.parse_args()
 
-    # Set up logging
-    logging.basicConfig(
-        filename='demux_2bRAD.log',
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        force=True
-    )
-    logging.debug("Logging initialized")
+    logging.basicConfig(filename='demux_2bRAD.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+    logging.info("--- Starting New Demultiplexing Run ---")
 
-    # Check for barcode overlaps
-    overlaps = [bc for bc in BARCODE_PAIRS if bc in ANTI_BARCODES]
-    if overlaps:
-        logging.warning(f"Barcode overlaps detected (3illBC present as antiBC too): {sorted(overlaps)}. Orientation must be used to disambiguate.")
-
-    logging.info("Starting demultiplexing and quality filtering")
-
-    # Compile regex patterns
     try:
-        site_pattern = re.compile(args.site)
-        barcode_pattern = re.compile(args.barcode)
-        adaptor_pattern = re.compile(f'^(.*)(?:{args.adaptor}).*$')  # use CLI-provided adaptor pattern for R2 trimming
-    except re.error as e:
-        logging.error(f"Failed to compile regex patterns: {e}")
-        print(f"Error: Failed to compile regex patterns: {e}", file=sys.stderr)
-        sys.exit(1)
+        site_pattern, barcode_pattern = re.compile(args.site), re.compile(args.barcode)
+    except re.error as e: logging.error(f"Failed to compile regex: {e}"); sys.exit(1)
 
-    # Load ID mapping
-    try:
-        id_map, bc_to_sample = load_id_map(args.idmap)
-    except Exception as e:
-        logging.error(f"Failed to load ID map: {e}")
-        print(f"Error: Failed to load ID map: {e}", file=sys.stderr)
-        sys.exit(1)
+    id_map, _ = load_id_map(args.idmap)
+    
+    demux_map = {}
+    if args.antiBC_only:
+        logging.info("Running in --antiBC_only mode. Demultiplexing will only use anti-barcodes.")
+        for ill_bc, anti_bc in BARCODE_PAIRS.items():
+            demux_map[anti_bc] = ill_bc
+    else:
+        for ill_bc, anti_bc in BARCODE_PAIRS.items():
+            demux_map[ill_bc] = ill_bc
+            demux_map[anti_bc] = ill_bc
 
-    # Find FASTQ files
     fastq_files = glob.glob('*.fq.gz') + glob.glob('*.fastq.gz')
-    if not fastq_files:
-        logging.error("No .fq.gz or .fastq.gz files found in current directory")
-        print("Error: No .fq.gz or .fastq.gz files found in current directory", file=sys.stderr)
-        sys.exit(1)
-
-    # Pair R1 and R2 files
-    pairs = {}
+    if not fastq_files: logging.error("No .fq.gz or .fastq.gz files found"); sys.exit(1)
+    
+    pairs = defaultdict(dict)
     for f in fastq_files:
         try:
             plate, row, read = parse_filename(f, args.plate, args.row, args.read)
-            # Construct a unique base_name for pairing, excluding the read designation part
-            # This assumes the part before the read designation is consistent for R1/R2 pairs
-            # Example: plate1_row1_R1.fastq.gz -> plate1_row1.fastq.gz
-            #          plate1_row1_R2.fastq.gz -> plate1_row1.fastq.gz
-            parts_no_ext = os.path.basename(f).split('.')[0].split('_')
-            base_name_parts = parts_no_ext[:args.read-1] + parts_no_ext[args.read:]
-            base_name = '_'.join(base_name_parts)
-
-            pairs.setdefault(base_name, {})[read] = f
-            logging.debug(f"Parsed filename {f}: Plate={plate}, Row={row}, Read={read}")
-        except Exception as e:
-            logging.error(f"Failed to parse filename {f}: {e}")
-            print(f"Error: Failed to parse filename {f}: {e}", file=sys.stderr)
-            sys.exit(1)
+            base_name = f"Plate{plate}_Row{row}"
+            pairs[base_name][read] = f
+        except Exception as e: logging.error(f"Failed to parse filename {f}: {e}"); sys.exit(1)
 
     for base_name, reads in pairs.items():
-        if 'R1' not in reads or ('R2' not in reads and not args.allR1):
-            if 'R1' not in reads:
-                logging.error(f"Missing R1 file for {base_name}")
-                print(f"Error: Missing R1 file for {base_name}", file=sys.stderr)
-            elif 'R2' not in reads and not args.allR1:
-                logging.error(f"Missing R2 file for {base_name} and --allR1 is not set")
-                print(f"Error: Missing R2 file for {base_name} and --allR1 is not set", file=sys.stderr)
-            sys.exit(1)
+        r1_file, r2_file = reads.get('R1'), reads.get('R2')
+        if not r1_file: continue
+        plate, row, _ = parse_filename(r1_file, args.plate, args.row, args.read)
+        logging.info(f"Processing pair: {r1_file}, {r2_file or 'N/A'}")
 
-    # Process each pair
-    for base_name, reads in pairs.items():
-        r1_file = reads['R1']
-        r2_file = reads.get('R2') # R2 might be None if --allR1 is set and no R2 exists
-        try:
-            plate, row, _ = parse_filename(r1_file, args.plate, args.row, args.read)
-        except Exception as e:
-            logging.error(f"Failed to parse filename {r1_file}: {e}")
-            print(f"Error: Failed to parse filename {r1_file}: {e}", file=sys.stderr)
-            sys.exit(1)
+        r1_data, r2_data = defaultdict(list), defaultdict(list)
+        r1_lengths, r2_lengths = defaultdict(list), defaultdict(list)
+        barcode_counts, site_role_counts = defaultdict(int), defaultdict(lambda: defaultdict(int))
+        read_id_to_target = {}
+        
+        with gzip.open(r1_file, 'rt') as f:
+            lines = iter(f)
+            for name, seq, plus, qual in zip(lines, lines, lines, lines):
+                name, seq, qual = name.strip(), seq.strip(), qual.strip()
+                m = site_pattern.match(seq)
+                if not m: continue
 
-        logging.info(f"Processing pair: {r1_file}, {r2_file if r2_file else 'N/A'}")
-
-        # Demultiplex R1 and store barcode assignments
-        r1_data = defaultdict(list)
-        r2_data = defaultdict(list)
-        barcode_counts = defaultdict(int)  # per target 3illBC
-        # Detailed counts
-        site_role_counts = defaultdict(lambda: defaultdict(int))  # target_3illBC -> {'site_fwd_3ill': n, 'site_fwd_anti': n, 'site_rev_anti': n, 'site_rev_3ill': n}
-
-        read_id_to_target = {}  # read id -> target 3illBC
-        r2_skipped = 0
-        r2_no_adaptor = 0
-        unmatched_r1_count = 0
-
-        # Process R1 file
-        try:
-            process = subprocess.Popen(['gzip', '-dc', r1_file], stdout=subprocess.PIPE, text=True)
-            lines = iter(process.stdout)
-            while True:
-                try:
-                    name = next(lines).strip()
-                    seq = next(lines).strip()
-                    plus = next(lines).strip()
-                    qual = next(lines).strip()
-                    if not name.startswith('@') or plus != '+':
-                        raise ValueError("Invalid FASTQ format")
-                    m = site_pattern.match(seq)
-                    # Enforce barcode immediately after site and adaptor after barcode on R1
-                    if m:
-                        # Exactly one of these will be non-None
-                        frag = m.group('forward') if m.group('forward') else m.group('reverse')
-                        orientation = 'forward' if m.group('forward') else 'reverse'
-                        bc_start = m.end()
-                        bc_end = bc_start + 4
-                        if bc_end <= len(seq) and barcode_pattern.fullmatch(seq[bc_start:bc_end]) and seq[bc_end:].startswith('AGATCGGAAG'):
-                            obs_bc = seq[bc_start:bc_end]
-                            
+                frag_start, frag_end = (m.start('forward'), m.end('forward')) if m.group('forward') else (m.start('reverse'), m.end('reverse'))
+                orientation = 'forward' if m.group('forward') else 'reverse'
+                bc_start, bc_end = frag_end, frag_end + 4
+                
+                if bc_end < len(seq) and barcode_pattern.fullmatch(seq[bc_start:bc_end]) and seq[bc_end:].startswith(args.adaptor):
+                    obs_bc = seq[bc_start:bc_end]
+                    
+                    target_bc = demux_map.get(obs_bc)
+                    
+                    if args.strict_orientation and target_bc is not None:
+                        is_ill_bc = obs_bc in ILL_BARCODES
+                        is_anti_bc = obs_bc in ANTI_BARCODES
+                        if (orientation == 'forward' and is_anti_bc) or \
+                           (orientation == 'reverse' and is_ill_bc):
                             target_bc = None
-                            if args.antiBC_only:
-                                # AntiBC-only mode: only assign if observed barcode is an antiBC
-                                if obs_bc in ANTI_BARCODES:
-                                    target_bc = ANTI_TO_ILL[obs_bc]
-                                    # Log for summary, but all reads here are treated as 'antiBC' role
-                                    if orientation == 'forward':
-                                        site_role_counts[target_bc]['site_fwd_anti'] += 1
-                                    else: # orientation == 'reverse'
-                                        site_role_counts[target_bc]['site_rev_anti'] += 1
-                                else:
-                                    # In antiBC-only mode, if it's not an antiBC, it's unmatched
-                                    target_bc = None # Will be handled as unmatched below
-                            else:
-                                # Original logic: Decide mapping based on site orientation and barcode role
-                                if orientation == 'forward':
-                                    # Expected: observed bc is 3illBC
-                                    if obs_bc in ILL_BARCODES:
-                                        target_bc = obs_bc
-                                        site_role_counts[target_bc]['site_fwd_3ill'] += 1
-                                    elif obs_bc in ANTI_BARCODES:
-                                        target_bc = ANTI_TO_ILL[obs_bc]
-                                        if args.strict_orientation:
-                                            # discard unexpected combo
-                                            continue
-                                        site_role_counts[target_bc]['site_fwd_anti'] += 1
-                                    else:
-                                        # Unknown barcode
-                                        target_bc = None
-                                    
-                                else:  # orientation == 'reverse'
-                                    # Expected: observed bc is antiBC
-                                    if obs_bc in ANTI_BARCODES:
-                                        target_bc = ANTI_TO_ILL[obs_bc]
-                                        site_role_counts[target_bc]['site_rev_anti'] += 1
-                                    elif obs_bc in ILL_BARCODES:
-                                        target_bc = obs_bc
-                                        if args.strict_orientation:
-                                            continue
-                                        site_role_counts[target_bc]['site_rev_3ill'] += 1
-                                    else:
-                                        target_bc = None
-                            
-                            if target_bc is None:
-                                # Record unmatched into special bucket (write later)
-                                # Keep only R1 unmatched for inspection
-                                trimmed_len = len(frag) - 2*args.trim if len(frag) >= 2*args.trim else 0
-                                if trimmed_len > 0:
-                                    rd_seq = frag[args.trim: len(frag) - args.trim]
-                                    rd_qual = qual[args.trim: len(frag) - args.trim]
-                                    dline = f"{name} bcd={obs_bc}\n{rd_seq}\n+\n{rd_qual}\n"
-                                    r1_data[obs_bc].append(dline)
-                                    unmatched_r1_count += 1
-                                continue
 
-                            # Build demultiplexed R1 record
-                            trimmed_len = len(frag) - 2*args.trim if len(frag) >= 2*args.trim else 0
-                            if trimmed_len <= 0:
-                                continue
-                            rd_seq = frag[args.trim: len(frag) - args.trim]
-                            rd_qual = qual[args.trim: len(frag) - args.trim]
-                            dline = f"{name}\n{rd_seq}\n+\n{rd_qual}\n"
-                            read_id = name.split()[0]
-                            read_id_to_target[read_id] = target_bc
-                            barcode_counts[target_bc] += 1
-                            r1_data[target_bc].append(dline)
-                        else:
-                            # No valid 4bp barcode + adaptor
-                            continue
-                    else:
-                        # No site match
-                        continue
-                except StopIteration:
-                    break
-            process.stdout.close()
-            process.wait()
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, 'gzip -dc')
-        except Exception as e:
-            logging.error(f"Failed to process R1 file {r1_file}: {e}")
-            print(f"Error: Failed to process R1 file {r1_file}: {e}", file=sys.stderr)
-            sys.exit(1)
+                    if target_bc is None: target_bc = f"UNMATCHED_{obs_bc}"
+                    
+                    if "UNMATCHED" not in target_bc:
+                        is_ill_bc = obs_bc in ILL_BARCODES
+                        is_anti_bc = obs_bc in ANTI_BARCODES
+                        if orientation == 'forward':
+                            if is_anti_bc: site_role_counts[target_bc]['SiteFwd_anti'] += 1
+                            elif is_ill_bc: site_role_counts[target_bc]['SiteFwd_3ill'] += 1
+                        else: # reverse orientation
+                            if is_anti_bc: site_role_counts[target_bc]['SiteRev_anti'] += 1
+                            elif is_ill_bc: site_role_counts[target_bc]['SiteRev_3ill'] += 1
 
-        # Process R2 file (only if r2_file exists)
+                    frag_seq, frag_qual = seq[frag_start:frag_end], qual[frag_start:frag_end]
+                    trim_start, trim_end = args.trim, len(frag_seq) - args.trim
+                    if trim_end <= trim_start: continue
+                    
+                    final_seq, final_qual = frag_seq[trim_start:trim_end], qual[trim_start:trim_end]
+                    dline = f"{name} bcd={obs_bc}\n{final_seq}\n+\n{final_qual}\n"
+                    read_id_to_target[name.split()[0]] = target_bc
+                    barcode_counts[target_bc] += 1
+                    r1_data[target_bc].append(dline)
+                    r1_lengths[target_bc].append(len(final_seq))
+
         if r2_file:
-            try:
-                process = subprocess.Popen(['gzip', '-dc', r2_file], stdout=subprocess.PIPE, text=True)
-                lines = iter(process.stdout)
-                while True:
-                    try:
-                        name = next(lines).strip()
-                        seq = next(lines).strip()
-                        plus = next(lines).strip()
-                        qual = next(lines).strip()
-                        if not name.startswith('@') or plus != '+':
-                            raise ValueError("Invalid FASTQ format")
-                        read_id = name.split()[0]
-                        if read_id in read_id_to_target:
-                            # Check for adaptor sequences for trimming R2
-                            m = adaptor_pattern.match(seq)
-                            if m:
-                                rd_seq = m.group(1)
-                                rd_qual = qual[:len(rd_seq)]
-                            else:
-                                rd_seq = seq
-                                rd_qual = qual
-                                r2_no_adaptor += 1
-                            # Apply trimming
-                            if len(rd_seq) >= 2 * args.trim:
-                                rd_seq = rd_seq[args.trim: len(rd_seq) - args.trim]
-                                rd_qual = rd_qual[args.trim: len(rd_qual) - args.trim]
-                            else:
-                                r2_skipped += 1
-                                continue
-                            dline = f"{name}\n{rd_seq}\n+\n{rd_qual}\n"
-                            target_bc = read_id_to_target[read_id]
+            with gzip.open(r2_file, 'rt') as f:
+                lines = iter(f)
+                for name, seq, plus, qual in zip(lines, lines, lines, lines):
+                    read_id = name.strip().split()[0]
+                    if read_id in read_id_to_target:
+                        target_bc = read_id_to_target[read_id]
+                        if "UNMATCHED" in target_bc: continue
+
+                        rd_seq, rd_qual = seq.strip(), qual.strip()
+                        
+                        read_len = len(rd_seq)
+                        if read_len > 36:
+                            suspect_zone_start = read_len - 10
+                            adaptor_pos = rd_seq.find(R2_ADAPTOR_SEED, suspect_zone_start)
+                            if adaptor_pos != -1:
+                                rd_seq, rd_qual = rd_seq[:adaptor_pos], rd_qual[:adaptor_pos]
+
+                        bc_to_check = target_bc
+                        rc_to_check = BARCODE_PAIRS.get(bc_to_check)
+                        if rd_seq.startswith(bc_to_check) or (rc_to_check and rd_seq.startswith(rc_to_check)): rd_seq, rd_qual = rd_seq[4:], rd_qual[4:]
+                        if rd_seq.endswith(bc_to_check) or (rc_to_check and rd_seq.endswith(rc_to_check)): rd_seq, rd_qual = rd_seq[:-4], rd_qual[:-4]
+
+                        if len(rd_seq) > 36: continue
+
+                        if len(rd_seq) > 2 * args.trim:
+                            final_seq = rd_seq[args.trim:-args.trim] if args.trim > 0 else rd_seq
+                            final_qual = rd_qual[args.trim:-args.trim] if args.trim > 0 else rd_qual
+                            dline = f"{name.strip()}\n{final_seq}\n+\n{final_qual}\n"
                             r2_data[target_bc].append(dline)
-                        else:
-                            r2_skipped += 1
-                            continue
-                    except StopIteration:
-                        break
-                process.stdout.close()
-                process.wait()
-                if process.returncode != 0:
-                    raise subprocess.CalledProcessError(process.returncode, 'gzip -dc')
-            except Exception as e:
-                logging.error(f"Failed to process R2 file {r2_file}: {e}")
-                print(f"Error: Failed to process R2 file {r2_file}: {e}", file=sys.stderr)
-                sys.exit(1)
-            logging.info(f"Skipped {r2_skipped} R2 reads due to missing R1 pair or insufficient length")
-            logging.info(f"Processed {r2_no_adaptor} R2 reads without detected adaptor sequences")
+                            r2_lengths[target_bc].append(len(final_seq))
 
-        # Write demultiplexed files
         unmatched_dir = f'unmatched_barcodes_Plate{plate}Row{row}'
-        os.makedirs(unmatched_dir, exist_ok=True)
-        unmatched_written_count = 0
-        for target_bc in list(r1_data.keys()):
-            # Unknown barcodes are not in ILL/ANTI; keep for inspection only
-            if target_bc not in ILL_BARCODES and target_bc not in ANTI_BARCODES:
-                outname = os.path.join(unmatched_dir, f"Plate{plate}_Row{row}_{target_bc}_R1.fq")
-                with open(outname, 'w') as out:
-                    for dline in r1_data[target_bc]:
-                        out.write(dline)
-                outname_r2 = os.path.join(unmatched_dir, f"Plate{plate}_Row{row}_{target_bc}_R2.fq")
-                with open(outname_r2, 'w') as out:
-                    for dline in r2_data.get(target_bc, []):
-                        out.write(dline)
-                unmatched_written_count += 1
-                # Remove to avoid further processing
-                del r1_data[target_bc]
-                if target_bc in r2_data:
-                    del r2_data[target_bc]
-        if unmatched_written_count > 0:
-            logging.info(f"Wrote {unmatched_written_count} unmatched barcode groups to {unmatched_dir}")
+        if any("UNMATCHED" in bc for bc in r1_data.keys()):
+            os.makedirs(unmatched_dir, exist_ok=True)
+            for target_bc in list(r1_data.keys()):
+                if "UNMATCHED" in target_bc:
+                    with open(os.path.join(unmatched_dir, f"{target_bc}_R1.fq"), 'w') as out: out.writelines(r1_data[target_bc])
+                    del r1_data[target_bc]
+            logging.info(f"Wrote unmatched barcode groups to {unmatched_dir}")
 
-        output_files = set()
-        for target_bc in sorted(r1_data.keys()):
-            if barcode_counts[target_bc] < args.min_bc_count:
-                logging.info(f"Skipping barcode {target_bc} with {barcode_counts[target_bc]} reads (below min_bc_count {args.min_bc_count})")
-                continue
-            
-            # Final output filename format: SampleID_R1_.fastq
+        output_files_to_filter = {}
+        for target_bc, count in barcode_counts.items():
+            if "UNMATCHED" in target_bc or count < args.min_bc_count: continue
             sample_id = id_map.get((plate, row, target_bc))
-            if not sample_id:
-                logging.warning(f"No sample ID found for Plate{plate}_Row{row}_{target_bc}. Skipping output for this barcode.")
-                continue
+            if not sample_id: continue
+            intermediate_r1, final_r1 = f"temp_{sample_id}_R1.fq", f"{sample_id}_R1_.fastq.gz"
+            with open(intermediate_r1, 'w') as out: out.writelines(r1_data[target_bc])
+            output_files_to_filter[intermediate_r1] = final_r1
+            if r2_data.get(target_bc):
+                intermediate_r2, final_r2 = f"temp_{sample_id}_R2.fq", f"{sample_id}_R2_.fastq.gz"
+                with open(intermediate_r2, 'w') as out: out.writelines(r2_data[target_bc])
+                output_files_to_filter[intermediate_r2] = final_r2
 
-            final_r1_out = f"{sample_id}_R1_.fastq"
-            final_r2_out = f"{sample_id}_R2_.fastq"
-
-            # Write intermediate files for quality filtering
-            intermediate_r1_out = f"Plate{plate}_Row{row}_{target_bc}_R1.fq"
-            with open(intermediate_r1_out, 'w') as out:
-                for dline in r1_data[target_bc]:
-                    out.write(dline)
-            output_files.add(intermediate_r1_out)
-
-            if r2_file:  # Only write R2 if an actual R2 file exists
-                intermediate_r2_out = f"Plate{plate}_Row{row}_{target_bc}_R2.fq"
-                with open(intermediate_r2_out, 'w') as out:
-                    for dline in r2_data.get(target_bc, []):
-                        out.write(dline)
-                output_files.add(intermediate_r2_out)
-
-            # Logging for intermediate files is now combined with quality filter step
-
-        # Write summary table (per plate-row)
         summary_file = f"Plate{plate}_Row{row}_barcode_summary.csv"
         with open(summary_file, 'w', newline='') as f:
+            header = ['3illBC', 'SampleID', 'TotalReads', 'SiteFwd_3ill', 'SiteFwd_anti', 'SiteRev_anti', 'SiteRev_3ill', 'R1_len_mean', 'R1_len_stdev', 'R2_len_mean', 'R2_len_stdev']
+            if args.antiBC_only: header = ['3illBC', 'SampleID', 'TotalReads', 'SiteFwd_anti', 'SiteRev_anti', 'R1_len_mean', 'R1_len_stdev', 'R2_len_mean', 'R2_len_stdev']
             writer = csv.writer(f)
-            # Adjust header based on antiBC_only mode
-            if args.antiBC_only:
-                writer.writerow(['3illBC', 'SampleID', 'TotalReads', 'SiteFwd_anti', 'SiteRev_anti'])
-            else:
-                writer.writerow(['3illBC', 'SampleID', 'TotalReads', 'SiteFwd_3ill', 'SiteFwd_anti', 'SiteRev_anti', 'SiteRev_3ill'])
+            writer.writerow(header)
             
-            for ill_bc, anti_bc in sorted(BARCODE_PAIRS.items()):
-                sample_id = id_map.get((plate, row, ill_bc), bc_to_sample.get(ill_bc, 'Unknown'))
+            for ill_bc in sorted(BARCODE_PAIRS.keys()):
+                sample_id = id_map.get((plate, row, ill_bc), 'N/A')
                 counts = site_role_counts.get(ill_bc, {})
+                total = barcode_counts.get(ill_bc, 0)
                 
+                r1_mean, r1_stdev = calculate_stats_from_list(r1_lengths[ill_bc])
+                r2_mean, r2_stdev = calculate_stats_from_list(r2_lengths[ill_bc])
+                
+                row_data = [ill_bc, sample_id, total]
                 if args.antiBC_only:
-                    sf_anti = counts.get('site_fwd_anti', 0)
-                    sr_anti = counts.get('site_rev_anti', 0)
-                    total = sf_anti + sr_anti
-                    writer.writerow([ill_bc, sample_id, total, sf_anti, sr_anti])
+                    row_data.extend([counts.get('SiteFwd_anti', 0), counts.get('SiteRev_anti', 0)])
                 else:
-                    sf3 = counts.get('site_fwd_3ill', 0)
-                    sfa = counts.get('site_fwd_anti', 0)
-                    sra = counts.get('site_rev_anti', 0)
-                    sr3 = counts.get('site_rev_3ill', 0)
-                    total = sf3 + sfa + sra + sr3
-                    writer.writerow([ill_bc, sample_id, total, sf3, sfa, sra, sr3])
+                    row_data.extend([counts.get('SiteFwd_3ill', 0), counts.get('SiteFwd_anti', 0), counts.get('SiteRev_anti', 0), counts.get('SiteRev_3ill', 0)])
+                
+                row_data.extend([f"{r1_mean:.2f}", f"{r1_stdev:.2f}", f"{r2_mean:.2f}", f"{r2_stdev:.2f}"])
+                writer.writerow(row_data)
         logging.info(f"Wrote barcode summary to {summary_file}")
 
-        # Quality filter and rename
-        for intermediate_outname in list(output_files): # Iterate over a copy as we modify the set
+        for intermediate_file, final_file in output_files_to_filter.items():
             try:
-                # Determine if it's R1 or R2 and get corresponding final name
-                if '_R1.fq' in intermediate_outname:
-                    barcode = intermediate_outname.split('_')[-2]
-                    sample_id = id_map.get((plate, row, barcode))
-                    final_out = f"{sample_id}_R1_.fastq"
-                elif '_R2.fq' in intermediate_outname:
-                    barcode = intermediate_outname.split('_')[-2]
-                    sample_id = id_map.get((plate, row, barcode))
-                    final_out = f"{sample_id}_R2_.fastq"
-                else:
-                    logging.warning(f"Unexpected intermediate file name format: {intermediate_outname}. Skipping quality filter.")
-                    continue
+                final_file_unzipped = final_file.replace('.gz', '')
+                cmd = ['fastq_quality_filter', '-i', intermediate_file, '-o', final_file_unzipped, '-Q', '33', '-q', '20', '-p', '90']
+                subprocess.run(cmd, check=True, capture_output=True)
+                with open(final_file_unzipped, 'rb') as f_in, gzip.open(final_file, 'wb') as f_out: f_out.writelines(f_in)
+                os.remove(final_file_unzipped)
+                os.remove(intermediate_file)
+            except FileNotFoundError:
+                logging.error(f"`fastq_quality_filter` not found. Gzipping without QC for {intermediate_file}.")
+                with open(intermediate_file, 'rb') as f_in, gzip.open(final_file, 'wb') as f_out: f_out.writelines(f_in)
+                os.remove(intermediate_file)
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Failed to quality filter {intermediate_file}: {e.stderr.decode()}")
+                if os.path.exists(intermediate_file): os.remove(intermediate_file)
 
-                cmd = [
-                    'fastq_quality_filter',
-                    '-i', intermediate_outname,
-                    '-o', final_out,
-                    '-Q', '33',
-                    '-q', '20',
-                    '-p', '90'
-                ]
-                subprocess.run(cmd, check=True)
-                os.remove(intermediate_outname)
-                logging.info(f"Quality filtered {intermediate_outname} to {final_out} and deleted intermediate file {intermediate_outname}")
-            except Exception as e:
-                logging.error(f"Failed to quality filter {intermediate_outname}: {e}")
-                print(f"Error: Failed to quality filter {intermediate_outname}: {e}", file=sys.stderr)
-                sys.exit(1)
-
-    logging.info("Demultiplexing and quality filtering completed")
-
+    logging.info("--- Demultiplexing Run Finished ---")
 
 if __name__ == "__main__":
     main()
-
-
