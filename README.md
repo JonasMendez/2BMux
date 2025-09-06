@@ -1,6 +1,6 @@
 # 2BMux: 2b-RAD Demultiplexing and Sample Sheet Generation Toolkit
 
-This repository contains a suite of scripts designed to process raw, multiplexed 2b-RAD sequencing data. The workflow allows you to demultiplex FASTQ files based on inline barcodes, generate the necessary sample mapping files, and prepare your data for downstream analysis tools like `ipyrad`.
+This repository contains a set of scripts designed to process raw, multiplexed 2b-RAD sequencing data. The workflow allows you to demultiplex FASTQ files based on inline barcodes, generate the necessary sample mapping files, and prepare your data for downstream analysis tools like `ipyrad`.
 
 ## Overview
 
@@ -28,20 +28,20 @@ The recommended workflow is as follows:
 
 ## 1. `PlateRelate.py` - Sample Sheet Generator
 
-This script automates the creation of the sample-to-barcode mapping file required by the main demultiplexer. It translates a simple plate layout into the precise format needed for the 2BMux.py script -idmap input.
+This script automates the creation of the sample-to-barcode mapping file required by the main demultiplexer. It translates a simple plate layout into the exact format needed for the 2BMux.py script -idmap input.
 
 ### Features
 
 *   Parses a simple CSV matrix representing your 8-row plate.
 *   Handles plates with a variable number of columns (up to 12).
 *   Ignores empty cells or cells with non-numeric text (e.g., "Blank").
-*   Maps the column position to a pre-defined 4-bp barcode.
+*   Maps the column position to a pre-defined 4-bp barcode. This can be changed by hardcoding the barcodes in the scripts.
 *   Accepts command-line arguments for plate number and input files.
 *   For multiple plates, run the script independently for each plate, using the proper plate number, and then concatenate output files for each and remove extra headers.
 ### Usage
 
 ```sh
-python PlateRelate.py -plate <PLATE_NUM> -matrix <MATRIX_FILE> -ids <IDS_FILE>
+python PlateRelate.py -plate 1 -matrix Plate1Matrix_input.csv -ids Plate1_Samples_input.csv
 ```
 
 **Arguments:**
@@ -84,7 +84,7 @@ Plate,Row,3illBC,SampleID
 
 ## 2. `2BMux.py` - The Demultiplexer
 
-2BMux is designed to demultiplex 2bRAD sequencing data, perform essential quality control steps including barcode and adapter trimming, and generate comprehensive summary statistics for each sample. It handles both R1 and R2 reads, associating them based on R1 barcode identification.
+2BMux is designed to demultiplex 2bRAD sequencing data, perform quality filtering, as well as barcode and adapter trimming. The script generates summary statistics for each sample across rows for each plate. It handles both R1 and R2 reads, associating them based on R1 barcode identification.
 
 ## Features
 
@@ -163,10 +163,10 @@ For each R1 read, the script performs the following:
 
 For each R2 read, the script performs:
 
-1.  **R1 Association:** It uses the read ID to find its corresponding R1 read and, crucially, the `target_bc` that was assigned to that R1 read. If no R1 match or the R1 was unmatched, the R2 read is skipped.
+1.  **R1 Association:** It uses the read ID to find its corresponding R1 read and the `target_bc` that was assigned to that R1 read. If no R1 match or the R1 was unmatched, the R2 read is skipped.
 2.  **R2 Trimming - Adapter Motif:** If the R2 read is longer than 36bp, it checks the last 10bp for the `AGAT` adapter motif. If found, it trims the read from that point. This handles partial adapter read-through.
 3.  **R2 Trimming - Barcode:** It then attempts to trim the 4bp `target_bc` (or its reverse complement) from *both* ends of the R2 read. This accounts for potential barcode presence due to library preparation or sequencing artifacts.
-4.  **Strict Length Filtering:** After all trimming attempts, if the R2 read is *still* longer than the expetced fragment size, it is discarded. This ensures only fragments of the expected length proceed.
+4.  **Strict Length Filtering:** After all trimming attempts, if the R2 read is *still* longer than the expected fragment size, it is discarded. This ensures only fragments of the expected length proceed.
 5.  **Final R2 Trimming:** Any additional symmetric trimming specified by `-trim` is applied.
 
 ### 5. Output Generation
@@ -185,7 +185,7 @@ For each R2 read, the script performs:
 
 ## Important Considerations
 
-*   **Filename Consistency:** The script relies heavily on consistent filename parsing. Ensure your input FASTQ files follow a predictable naming convention that allows the `-plate`, `-row`, and `-read` arguments to correctly extract information.
+*   **Filename Consistency:** The script depends on consistent filename parsing. Ensure your input FASTQ files follow a predictable naming convention that allows the `-plate`, `-row`, and `-read` arguments to correctly extract information.
 *   **Barcode Definitions:** The `BARCODE_PAIRS` dictionary at the top of the script defines the expected 3illBC and antiBC pairs. Ensure this matches your library preparation. You can hardcode your own barcode pairs if needed.
 *   **`fastq_quality_filter`:** While optional, its presence is highly recommended for robust quality control. Install FASTX_Toolkit (e.g., via `conda install bioconda::fastx_toolkit`) if you intend to use its functionality.
 *   **Memory Usage:** For very large datasets, the script stores all reads in memory before writing them to disk. Consider processing smaller batches if memory becomes an issue.
@@ -195,7 +195,7 @@ For each R2 read, the script performs:
 
 ## 3. `concatenatepairs.sh` - FASTQ Merger
 
-A simple shell script to concatenate R1 and R2 files into a single merged file, which is a common requirement for `ipyrad`'s `2brad` assembly mode.
+A simple shell script to concatenate R1 and R2 files into a single merged file, which is a requirement for `ipyrad`'s `2brad` assembly mode.
 
 ### Features
 
