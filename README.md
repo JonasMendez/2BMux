@@ -106,7 +106,7 @@ Plate,Row,3illBC,SampleID
 ## Usage
 
 ```bash
-python demux_2bRAD.py \
+python 2BMux.py \
     -plate <position_of_plate_in_filename> \
     -row <position_of_row_in_filename> \
     -read <position_of_read_type_in_filename> \
