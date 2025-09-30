@@ -192,7 +192,7 @@ This version implements the following major memory-saving strategies:
 
 *   **Elimination of In-Memory Read Storage**: Unlike `2BMux.py`, which accumulates all demultiplexed reads in `r1_data` and `r2_data` dictionaries before writing, `2bmux_memopt.py` writes each successfully processed read directly to its respective temporary output file as it is encountered. This prevents the massive accumulation of read data in RAM.
 *   **Optimized Statistics Calculation**: Instead of storing lists of all read lengths and quality scores (`r1_quals`, `r2_quals`), this script calculates running sums and counts for these metrics. This allows for the computation of mean and standard deviation without holding individual data points in memory, significantly reducing the memory footprint for statistical tracking.
-*   **Streamlined File Handling**: Output files for each sample are opened incrementally and written to as reads are processed. This approach requires careful management of file handles but ensures that only a minimal amount of data resides in memory at any given time.
+*   **Streamlined File Handling**: Output files for each sample are opened incrementally and written to as reads are processed.
 
 ### Usage
 
